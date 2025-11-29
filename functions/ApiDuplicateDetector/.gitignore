@@ -1,0 +1,13 @@
+# Build outputs
+bin/
+obj/
+deploy-output/
+*.zip
+
+# Local settings (contains secrets)
+local.settings.json
+
+# IDE
+.vs/
+.vscode/
+*.user
