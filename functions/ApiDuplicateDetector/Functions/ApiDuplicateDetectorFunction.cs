@@ -132,6 +132,16 @@ public class ApiDuplicateDetectorFunction
             {
                 _logger.LogWarning("⚠️ Found {Count} potential duplicate(s) for API '{Name}'",
                     duplicates.Count, newApi.Name);
+                
+                // Emit custom event for Azure Monitor Alert
+                // This structured log will be picked up by Application Insights and can trigger alerts
+                _logger.LogWarning(
+                    "DuplicateApiDetected: API '{ApiName}' has {DuplicateCount} potential duplicates. " +
+                    "Highest similarity: {HighestSimilarity:P0}. APIs: {DuplicateNames}",
+                    newApi.Name,
+                    duplicates.Count,
+                    duplicates.Max(d => d.OverallScore),
+                    string.Join(", ", duplicates.Select(d => d.ExistingApi.Name)));
             }
             else
             {

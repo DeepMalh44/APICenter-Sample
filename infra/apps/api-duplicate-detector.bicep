@@ -205,6 +205,71 @@ resource eventGridTopic 'Microsoft.EventGrid/systemTopics@2023-12-15-preview' = 
   }
 }
 
+
+// Email address for notifications
+@description('Email address for duplicate API detection alerts')
+param alertEmailAddress string = 'ketaanhshah@microsoft.com'
+
+// Action Group for email notifications
+resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
+  name: 'ag-api-duplicate-alerts'
+  location: 'global'
+  properties: {
+    groupShortName: 'APIDupAlert'
+    enabled: true
+    emailReceivers: [
+      {
+        name: 'API Admin Email'
+        emailAddress: alertEmailAddress
+        useCommonAlertSchema: true
+      }
+    ]
+  }
+}
+
+// Scheduled Query Rule Alert for Duplicate API Detection
+resource duplicateApiAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
+  name: 'alert-duplicate-api-detected'
+  location: location
+  properties: {
+    displayName: 'Duplicate API Detected Alert'
+    description: 'Triggers when a potential duplicate API is detected in API Center'
+    severity: 2
+    enabled: true
+    evaluationFrequency: 'PT5M'
+    scopes: [
+      appInsights.id
+    ]
+    targetResourceTypes: [
+      'microsoft.insights/components'
+    ]
+    windowSize: 'PT5M'
+    criteria: {
+      allOf: [
+        {
+          query: 'traces | where message contains "DuplicateApiDetected"'
+          timeAggregation: 'Count'
+          operator: 'GreaterThan'
+          threshold: 0
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    autoMitigate: false
+    actions: {
+      actionGroups: [
+        actionGroup.id
+      ]
+      customProperties: {
+        AlertType: 'DuplicateAPIDetection'
+        Source: 'API Center Duplicate Detector'
+      }
+    }
+  }
+}
 // Outputs
 output functionAppName string = functionApp.name
 output functionAppUrl string = 'https://${functionApp.properties.defaultHostName}'
