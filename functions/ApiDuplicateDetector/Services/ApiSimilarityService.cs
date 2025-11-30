@@ -41,6 +41,10 @@ public class ApiSimilarityService : IApiSimilarityService
     public List<ApiSimilarityResult> FindPotentialDuplicates(ApiInfo newApi, List<ApiInfo> existingApis, double threshold)
     {
         var results = new List<ApiSimilarityResult>();
+        _logger.LogWarning("=== Comparing {Api} against {Count} APIs (threshold: {T}) ===", newApi.Name, existingApis.Count, threshold);
+        _logger.LogWarning("New API endpoints: {Count}", newApi.Endpoints.Count);
+        _logger.LogWarning("=== Comparing {Api} against {Count} APIs (threshold: {T}) ===", newApi.Name, existingApis.Count, threshold);
+        _logger.LogWarning("New API endpoints: {Count}", newApi.Endpoints.Count);
 
         foreach (var existingApi in existingApis)
         {
@@ -494,6 +498,7 @@ public class ApiSimilarityService : IApiSimilarityService
         result.Recommendations.Add($"💡 Contact the owner of '{result.ExistingApi.Name}' to discuss potential collaboration.");
     }
 }
+
 
 
 

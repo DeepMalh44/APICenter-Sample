@@ -43,6 +43,7 @@ public class ApiCenterService : IApiCenterService
 
         try
         {
+            _logger.LogWarning("=== GetAllApisAsync START ===");
             var armClient = new ArmClient(_credential);
             var subscription = armClient.GetSubscriptionResource(
                 new Azure.Core.ResourceIdentifier($"/subscriptions/{_subscriptionId}"));
@@ -53,9 +54,14 @@ public class ApiCenterService : IApiCenterService
             // Get the default workspace
             var workspace = await apiCenterService.Value.GetApiCenterWorkspaceAsync("default");
             
+            _logger.LogWarning("Listing all APIs in workspace...");
+            int apiCount = 0;
             // List all APIs in the workspace
             await foreach (var api in workspace.Value.GetApiCenterApis().GetAllAsync())
             {
+                apiCount++;
+                _logger.LogWarning("Processing API #{Count}: {ApiName}", apiCount, api.Data.Name);
+                
                 var apiInfo = new ApiInfo
                 {
                     Id = api.Data.Id?.ToString() ?? "",
@@ -69,18 +75,23 @@ public class ApiCenterService : IApiCenterService
                 await foreach (var version in api.GetApiCenterApiVersions().GetAllAsync())
                 {
                     apiInfo.Version = version.Data.Name;
+                    _logger.LogWarning("  Version: {Version}", version.Data.Name);
                     
                     // Get definitions for this version
                     await foreach (var definition in version.GetApiCenterApiDefinitions().GetAllAsync())
                     {
+                        _logger.LogWarning("  Definition: {Definition}", definition.Data.Name);
                         try
                         {
                             // Export the specification content
+                            _logger.LogWarning("  Exporting spec for {Api}/{Ver}/{Def}...", 
+                                api.Data.Name, version.Data.Name, definition.Data.Name);
                             var exportResult = await definition.ExportSpecificationAsync(WaitUntil.Completed);
                             
                             if (exportResult?.Value?.Value != null)
                             {
                                 apiInfo.SpecificationContent = exportResult.Value.Value;
+                                _logger.LogWarning("  Got spec, length: {Len}", exportResult.Value.Value.Length);
                                 
                                 // Parse the spec to extract endpoints and schemas
                                 var parsedApi = _similarityService.ParseOpenApiSpec(
@@ -91,9 +102,8 @@ public class ApiCenterService : IApiCenterService
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogWarning(ex, 
-                                "Could not export specification for {ApiName}/{Version}/{Definition}",
-                                api.Data.Name, version.Data.Name, definition.Data.Name);
+                            _logger.LogWarning("  EXPORT FAILED for {ApiName}/{Version}/{Definition}: {Error}",
+                                api.Data.Name, version.Data.Name, definition.Data.Name, ex.Message);
                         }
                         
                         break; // Only process first definition
@@ -117,21 +127,97 @@ public class ApiCenterService : IApiCenterService
     /// <inheritdoc/>
     public async Task<ApiInfo?> GetApiFromSubjectAsync(string subject)
     {
-        // Parse subject like:
-        // /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ApiCenter/services/{name}/workspaces/default/apis/{apiName}/versions/{version}/definitions/{def}
+        _logger.LogWarning("Parsing subject: {Subject}", subject);
+        
+        // Parse subject - can be various formats:
+        // Format 1: /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ApiCenter/services/{name}/workspaces/default/apis/{apiName}/versions/{version}/definitions/{def}
+        // Format 2: /workspaces/default/apis/{apiName}/versions/{version}/definitions/{def}
+        // Format 3: apis/{apiName}/versions/{version}/definitions/{def}
+        
         var match = Regex.Match(subject, 
-            @"/apis/(?<apiName>[^/]+)/versions/(?<version>[^/]+)/definitions/(?<definition>[^/]+)$");
+            @"apis/(?<apiName>[^/]+)/versions/(?<version>[^/]+)/definitions/(?<definition>[^/]+)");
         
         if (!match.Success)
         {
-            _logger.LogWarning("Could not parse API details from subject: {Subject}", subject);
-            return null;
+            // Try alternate format - just API name without versions
+            match = Regex.Match(subject, @"apis/(?<apiName>[^/]+)");
+            if (!match.Success)
+            {
+                _logger.LogWarning("Could not parse API details from subject: {Subject}", subject);
+                return null;
+            }
+            
+            // If we only have API name, we need to find the latest version/definition
+            var apiName = match.Groups["apiName"].Value;
+            _logger.LogWarning("Found API name only: {ApiName}, will find latest version", apiName);
+            return await GetApiWithLatestVersionAsync(apiName);
         }
 
-        var apiName = match.Groups["apiName"].Value;
+        var parsedApiName = match.Groups["apiName"].Value;
         var versionName = match.Groups["version"].Value;
         var definitionName = match.Groups["definition"].Value;
+        
+        _logger.LogWarning("Parsed successfully: API={ApiName}, Version={Version}, Definition={Definition}",
+            parsedApiName, versionName, definitionName);
 
+        try
+        {
+            _logger.LogWarning("Creating ARM client with subscription: {Sub}, RG: {RG}, APIC: {APIC}",
+                _subscriptionId, _resourceGroup, _apiCenterName);
+                
+            var armClient = new ArmClient(_credential);
+            var subscription = armClient.GetSubscriptionResource(
+                new Azure.Core.ResourceIdentifier($"/subscriptions/{_subscriptionId}"));
+
+            _logger.LogWarning("Getting resource group...");
+            var resourceGroup = await subscription.GetResourceGroupAsync(_resourceGroup);
+            
+            _logger.LogWarning("Getting API Center service...");
+            var apiCenterService = await resourceGroup.Value.GetApiCenterServiceAsync(_apiCenterName);
+            
+            _logger.LogWarning("Getting workspace...");
+            var workspace = await apiCenterService.Value.GetApiCenterWorkspaceAsync("default");
+            
+            _logger.LogWarning("Getting API: {ApiName}", parsedApiName);
+            var api = await workspace.Value.GetApiCenterApiAsync(parsedApiName);
+            
+            var apiInfo = new ApiInfo
+            {
+                Id = api.Value.Data.Id?.ToString() ?? "",
+                Name = api.Value.Data.Name ?? "",
+                Title = api.Value.Data.Name,
+                Description = null,
+                Kind = "rest",
+                Version = versionName
+            };
+
+            // Get the specific definition content
+            _logger.LogWarning("Getting API definition content for {ApiName}/{Version}/{Definition}", 
+                parsedApiName, versionName, definitionName);
+            var specContent = await GetApiDefinitionContentAsync(parsedApiName, versionName, definitionName);
+            _logger.LogWarning("Got spec content, length: {Length}", specContent?.Length ?? 0);
+            if (!string.IsNullOrEmpty(specContent))
+            {
+                apiInfo.SpecificationContent = specContent;
+                var parsedApi = _similarityService.ParseOpenApiSpec(specContent, parsedApiName);
+                apiInfo.Endpoints = parsedApi.Endpoints;
+                apiInfo.Schemas = parsedApi.Schemas;
+            }
+
+            return apiInfo;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting API from subject: {Subject}", subject);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Gets an API with its latest version and definition when only the API name is known.
+    /// </summary>
+    private async Task<ApiInfo?> GetApiWithLatestVersionAsync(string apiName)
+    {
         try
         {
             var armClient = new ArmClient(_credential);
@@ -150,25 +236,47 @@ public class ApiCenterService : IApiCenterService
                 Name = api.Value.Data.Name ?? "",
                 Title = api.Value.Data.Name,
                 Description = null,
-                Kind = "rest",
-                Version = versionName
+                Kind = "rest"
             };
 
-            // Get the specific definition content
-            var specContent = await GetApiDefinitionContentAsync(apiName, versionName, definitionName);
-            if (!string.IsNullOrEmpty(specContent))
+            // Find the latest version and its definition
+            await foreach (var version in api.Value.GetApiCenterApiVersions().GetAllAsync())
             {
-                apiInfo.SpecificationContent = specContent;
-                var parsedApi = _similarityService.ParseOpenApiSpec(specContent, apiName);
-                apiInfo.Endpoints = parsedApi.Endpoints;
-                apiInfo.Schemas = parsedApi.Schemas;
+                apiInfo.Version = version.Data.Name;
+                _logger.LogInformation("Found version: {Version}", version.Data.Name);
+                
+                await foreach (var definition in version.GetApiCenterApiDefinitions().GetAllAsync())
+                {
+                    _logger.LogInformation("Found definition: {Definition}", definition.Data.Name);
+                    
+                    try
+                    {
+                        var exportResult = await definition.ExportSpecificationAsync(WaitUntil.Completed);
+                        if (exportResult?.Value?.Value != null)
+                        {
+                            apiInfo.SpecificationContent = exportResult.Value.Value;
+                            var parsedApi = _similarityService.ParseOpenApiSpec(
+                                exportResult.Value.Value, apiName);
+                            apiInfo.Endpoints = parsedApi.Endpoints;
+                            apiInfo.Schemas = parsedApi.Schemas;
+                            _logger.LogInformation("Loaded spec with {EndpointCount} endpoints", 
+                                apiInfo.Endpoints.Count);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Could not export specification");
+                    }
+                    break; // Take first definition
+                }
+                break; // Take first version
             }
 
             return apiInfo;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting API from subject: {Subject}", subject);
+            _logger.LogError(ex, "Error getting API with latest version: {ApiName}", apiName);
             return null;
         }
     }
@@ -176,6 +284,8 @@ public class ApiCenterService : IApiCenterService
     /// <inheritdoc/>
     public async Task<string?> GetApiDefinitionContentAsync(string apiName, string versionName, string definitionName)
     {
+        _logger.LogWarning("=== GetApiDefinitionContentAsync START: {ApiName}/{Version}/{Definition} ===",
+            apiName, versionName, definitionName);
         try
         {
             var armClient = new ArmClient(_credential);
@@ -186,15 +296,21 @@ public class ApiCenterService : IApiCenterService
             var apiCenterService = await resourceGroup.Value.GetApiCenterServiceAsync(_apiCenterName);
             
             var workspace = await apiCenterService.Value.GetApiCenterWorkspaceAsync("default");
+            _logger.LogWarning("Getting API resource: {ApiName}", apiName);
             var api = await workspace.Value.GetApiCenterApiAsync(apiName);
+            _logger.LogWarning("Getting version resource: {Version}", versionName);
             var version = await api.Value.GetApiCenterApiVersionAsync(versionName);
+            _logger.LogWarning("Getting definition resource: {Definition}", definitionName);
             var definition = await version.Value.GetApiCenterApiDefinitionAsync(definitionName);
             
+            _logger.LogWarning("Calling ExportSpecificationAsync...");
             var exportResult = await definition.Value.ExportSpecificationAsync(WaitUntil.Completed);
+            _logger.LogWarning("Export completed, result length: {Length}", exportResult?.Value?.Value?.Length ?? 0);
             return exportResult?.Value?.Value;
         }
         catch (Exception ex)
         {
+            _logger.LogWarning("ERROR in GetApiDefinitionContentAsync: {Error}", ex.Message);
             _logger.LogError(ex, 
                 "Error getting API definition content for {ApiName}/{Version}/{Definition}",
                 apiName, versionName, definitionName);

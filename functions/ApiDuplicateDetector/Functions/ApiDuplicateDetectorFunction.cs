@@ -51,11 +51,12 @@ public class ApiDuplicateDetectorFunction
     public async Task Run(
         [EventGridTrigger] EventGridEvent eventGridEvent)
     {
-        _logger.LogInformation("=== API Duplicate Detector Triggered ===");
-        _logger.LogInformation("Event Type: {EventType}", eventGridEvent.EventType);
-        _logger.LogInformation("Subject: {Subject}", eventGridEvent.Subject);
-        _logger.LogInformation("Event Time: {EventTime}", eventGridEvent.EventTime);
-        _logger.LogInformation("Semantic Analysis: {Enabled}", _semanticEnabled ? "Enabled" : "Disabled");
+        _logger.LogWarning("=== API Duplicate Detector Triggered ===");
+        _logger.LogWarning("Event Type: {EventType}", eventGridEvent.EventType);
+        _logger.LogWarning("Subject: {Subject}", eventGridEvent.Subject);
+        _logger.LogWarning("Event Time: {EventTime}", eventGridEvent.EventTime);
+        _logger.LogWarning("Event Data Raw: {Data}", eventGridEvent.Data?.ToString());
+        _logger.LogWarning("Semantic Analysis: {Enabled}", _semanticEnabled ? "Enabled" : "Disabled");
 
         try
         {
@@ -63,7 +64,7 @@ public class ApiDuplicateDetectorFunction
             if (eventGridEvent.EventType != "Microsoft.ApiCenter.ApiDefinitionAdded" &&
                 eventGridEvent.EventType != "Microsoft.ApiCenter.ApiDefinitionUpdated")
             {
-                _logger.LogInformation("Ignoring event type: {EventType}", eventGridEvent.EventType);
+                _logger.LogWarning("Ignoring event type: {EventType}", eventGridEvent.EventType);
                 return;
             }
 
@@ -88,29 +89,30 @@ public class ApiDuplicateDetectorFunction
                 return;
             }
 
-            _logger.LogInformation("Processing API: {Name} with {EndpointCount} endpoints and {SchemaCount} schemas",
+            _logger.LogWarning("Processing API: {Name} with {EndpointCount} endpoints and {SchemaCount} schemas",
                 newApi.Name, newApi.Endpoints.Count, newApi.Schemas.Count);
 
             // Get all existing APIs from API Center
+            _logger.LogWarning("Retrieving all APIs from API Center for comparison...");
             var allApis = await _apiCenterService.GetAllApisAsync();
-            _logger.LogInformation("Retrieved {Count} APIs from API Center for comparison", allApis.Count);
+            _logger.LogWarning("Retrieved {Count} APIs from API Center for comparison", allApis.Count);
 
             // Find potential duplicates (use semantic analysis if available)
             List<ApiSimilarityResult> duplicates;
             
             if (_semanticEnabled && _vectorStoreService != null)
             {
-                _logger.LogInformation("Using semantic + structural similarity analysis");
+                _logger.LogWarning("Using semantic + structural similarity analysis");
                 duplicates = await _similarityService.FindPotentialDuplicatesSemanticAsync(
                     newApi, _similarityThreshold);
                     
                 // Store the new API's embedding for future comparisons
                 await _similarityService.StoreApiEmbeddingAsync(newApi);
-                _logger.LogInformation("Stored API embedding in vector database");
+                _logger.LogWarning("Stored API embedding in vector database");
             }
             else
             {
-                _logger.LogInformation("Using structural similarity analysis only");
+                _logger.LogWarning("Using structural similarity analysis only");
                 duplicates = _similarityService.FindPotentialDuplicates(
                     newApi, allApis, _similarityThreshold);
             }
@@ -145,7 +147,7 @@ public class ApiDuplicateDetectorFunction
             }
             else
             {
-                _logger.LogInformation("✅ No duplicates found for API '{Name}'", newApi.Name);
+                _logger.LogWarning("✅ No duplicates found for API '{Name}'", newApi.Name);
             }
         }
         catch (Exception ex)
